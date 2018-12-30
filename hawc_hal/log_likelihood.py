@@ -8,14 +8,12 @@ import numpy as np
      nopython=True, parallel=False)
 def log_likelihood(observed_counts, expected_bkg_counts, expected_model_counts):  # pragma: no cover
     """
-    Poisson log-likelihood minus log factorial minus bias. The bias migth be needed to keep the numerical value
-    of the likelihood small enough so that there aren't numerical problems when computing differences between two
-    likelihood values.
+    Poisson log-likelihood but without the log-factorial term. Computing the log factorial is expensive, so it is
+    precomputed elsewhere and subtracted from the return value of this function.
 
     :param observed_counts:
     :param expected_bkg_counts:
     :param expected_model_counts:
-    :param bias:
     :return:
     """
 

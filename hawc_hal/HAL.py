@@ -121,18 +121,16 @@ class HAL(PluginPrototype):
         # We also apply a bias so that the numerical value of the log-likelihood stays small. This helps when
         # fitting with algorithms like MINUIT because the convergence criterium involves the difference between
         # two likelihood values, which would be affected by numerical precision errors if the two values are
-        # too large
+        # too large. These quantities are computed by _compute_likelihood_biases when selecting analysis bins (in
+        # set_active_measurements) or when cloning the object (in get_simulated_dataset).
         self._saturated_model_like_per_maptree = collections.OrderedDict()
-
-        # The actual computation is in a method so we can recall it on clone (see the get_simulated_dataset method)
-        self._compute_likelihood_biases()
 
         # This will save a clone of self for simulations
         self._clone = None
 
         # Integration method for the PSF (see psf_integration_method)
         self._psf_integration_method = "exact"
-
+        
     @property
     def psf_integration_method(self):
         """
@@ -177,8 +175,11 @@ class HAL(PluginPrototype):
 
 
     def _compute_likelihood_biases(self):
+    
+        self._log_factorials.clear()
+        self._saturated_model_like_per_maptree.clear()
 
-        for bin_label in self._maptree:
+        for bin_label in self._active_planes:
 
             data_analysis_bin = self._maptree[bin_label]
 
@@ -191,7 +192,9 @@ class HAL(PluginPrototype):
 
             sat_model = np.clip(obs - bkg, 1e-50, None).astype(np.float64)
 
-            self._saturated_model_like_per_maptree[bin_label] = log_likelihood(obs, bkg, sat_model) - this_log_factorial
+            self._saturated_model_like_per_maptree[bin_label] = self._get_log_like_plus_log_factorial(
+                obs, bkg, sat_model, bin_label
+            ) - this_log_factorial
 
     def get_saturated_model_likelihood(self):
         """
@@ -199,7 +202,7 @@ class HAL(PluginPrototype):
 
         :return:
         """
-        return sum(self._saturated_model_like_per_maptree[bin_label] for bin_label in self._active_planes)
+        return sum(self._saturated_model_like_per_maptree[bin_label].values())
 
     def set_active_measurements(self, bin_id_min=None, bin_id_max=None, bin_list=None):
         """
@@ -208,29 +211,40 @@ class HAL(PluginPrototype):
         - Specifying a range: if the response and the maptree allows it, you can specify a minimum id and a maximum id
         number. This only works if the analysis bins are numerical, like in the normal fHit analysis. For example:
 
-            > set_active_measurement(bin_id_min=1, bin_id_max=9(
+            > set_active_measurement(bin_id_min=1, bin_id_max=9)
 
-        - Specifying a list of bins as strings. This is more powerful, as allows to select any bins, even
-        non-contiguous bins. For example:
+        - Specifying an iterable of bins as strings. This is more powerful, as it allows to the user select any bins,
+        even non-contiguous bins. For example:
 
-            > set_active_measurement(bin_list=[list])
+            > set_active_measurement(bin_list=iterable)
+            
+        If the bin_list parameter is a dictionary  mapping strings to floating-point numbers, a top-hat analysis is
+        used, with the dictionary values being the top-hat radii in degrees. Otherwise a pixel-by-pixel analysis is
+        performed.
 
         :param bin_id_min: minimum bin (only works for fHit analysis. For the others, use bin_list)
         :param bin_id_max: maximum bin (only works for fHit analysis. For the others, use bin_list)
-        :param bin_list: a list of analysis bins to use
+        :param bin_list: an iterable containing bin names, possibly a dictionary mapping them to top-hat radii
         :return: None
         """
+        
+        do_top_hat = isinstance(bin_list, dict)
+        
+        assert not do_top_hat or self._roi is not None, "ROI must be specified for top-hat analysis."
 
+        self._active_planes = collections.OrderedDict() if do_top_hat else []
+        
         # Check for legal input
         if bin_id_min is not None:
 
             assert bin_id_max is not None, "If you provide a minimum bin, you also need to provide a maximum bin"
+            
+            assert bin_list is None, "If you provide minimum and maximum bins, don't provide a bin list."
 
             # Make sure they are integers
             bin_id_min = int(bin_id_min)
             bin_id_max = int(bin_id_max)
 
-            self._active_planes = []
             for this_bin in range(bin_id_min, bin_id_max + 1):
                 this_bin = str(this_bin)
                 if this_bin not in self._all_planes:
@@ -244,20 +258,42 @@ class HAL(PluginPrototype):
             assert bin_id_max is None, "If you provide a maximum bin, you also need to provide a minimum bin"
 
             assert bin_list is not None
-
-            self._active_planes = []
-
+            
             for this_bin in bin_list:
 
                 if not this_bin in self._all_planes:
 
                     raise ValueError("Bin %s it not contained in this response" % this_bin)
+                    
+                if do_top_hat:
+                
+                    dists_rad = hp.rotator.angdist(
+                        self._roi.ra_dec_center,
+                        hp.pix2ang(self._maptree[this_bin].nside, self._active_pixels[this_bin], lonlat=True),
+                        True
+                    )
+                
+                    self._active_planes[this_bin] = [
+                        i for i, is_selected in enumerate(np.degrees(dists_rad) < bin_list[this_bin]) if is_selected
+                    ]
+                
+                else:
 
-                self._active_planes.append(this_bin)
+                    self._active_planes.append(this_bin)
 
         if self._likelihood_model:
 
             self.set_model( self._likelihood_model )
+        
+        self._compute_likelihood_biases()
+        
+    def _has_top_hats(self):
+    
+        return isinstance(self._active_planes, dict)
+        
+    def _get_bin_list(self):
+    
+        return list(self._active_planes) if self._has_top_hats() else self._active_planes
 
     def display(self, verbose=False):
         """
@@ -291,7 +327,7 @@ class HAL(PluginPrototype):
         print("")
         print("Active energy/nHit planes ({}):".format(len(self._active_planes)))
         print("-------------------------------\n")
-        print(self._active_planes)
+        print(self._get_bin_list())
 
     def set_model(self, likelihood_model_instance):
         """
@@ -409,12 +445,12 @@ class HAL(PluginPrototype):
     def _plot_spectrum(self, net_counts, yerr, model_only, residuals, residuals_err):
 
         fig, subs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [2, 1], 'hspace': 0})
+        
+        bin_list = self._get_bin_list()
 
-        subs[0].errorbar(self._active_planes, net_counts, yerr=yerr,
-                         capsize=0,
-                         color='black', label='Net counts', fmt='.')
+        subs[0].errorbar(bin_list, net_counts, yerr=yerr, capsize=0, color='black', label='Net counts', fmt='.')
 
-        subs[0].plot(self._active_planes, model_only, label='Convolved model')
+        subs[0].plot(bin_list, model_only, label='Convolved model')
 
         subs[0].legend(bbox_to_anchor=(1.0, 1.0), loc="upper right",
                        numpoints=1)
@@ -422,11 +458,7 @@ class HAL(PluginPrototype):
         # Residuals
         subs[1].axhline(0, linestyle='--')
 
-        subs[1].errorbar(
-            self._active_planes, residuals,
-            yerr=residuals_err,
-            capsize=0, fmt='.'
-        )
+        subs[1].errorbar(bin_list, residuals, yerr=residuals_err, capsize=0, fmt='.')
 
         y_limits = [min(net_counts[net_counts > 0]) / 2., max(net_counts) * 2.]
 
@@ -436,12 +468,25 @@ class HAL(PluginPrototype):
 
         subs[1].set_xlabel("Analysis bin")
         subs[1].set_ylabel(r"$\frac{{cts - mod - bkg}}{\sqrt{mod + bkg}}$")
-        subs[1].set_xticks(self._active_planes)
-        subs[1].set_xticklabels(self._active_planes)
+        subs[1].set_xticks(bin_list)
+        subs[1].set_xticklabels(bin_list)
 
         subs[0].set_ylim(y_limits)
 
         return fig
+        
+    def _get_log_like_plus_log_factorial(self, obs, bkg, model, bin_id):
+    
+        has_top_hats = self._has_top_hats()
+
+        if has_top_hats:
+
+            top_hat_pix = self._active_planes[bin_id]
+        
+        arrs = obs, bkg, model
+        return log_likelihood(
+            *(np.array((sum(arr[i] for i in top_hat_pix),)) for arr in arrs) if has_top_hats else arrs
+        )
 
     def get_log_like(self):
         """
@@ -472,9 +517,7 @@ class HAL(PluginPrototype):
             obs = data_analysis_bin.observation_map.as_partial()  # type: np.array
             bkg = data_analysis_bin.background_map.as_partial() * bkg_renorm  # type: np.array
 
-            this_pseudo_log_like = log_likelihood(obs,
-                                                  bkg,
-                                                  this_model_map_hpx)
+            this_pseudo_log_like = self._get_log_like_plus_log_factorial(obs, bkg, this_model_map_hpx, bin_id)
 
             total_log_like += this_pseudo_log_like - self._log_factorials[bin_id] \
                               - self._saturated_model_like_per_maptree[bin_id]
