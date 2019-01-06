@@ -475,18 +475,64 @@ class HAL(PluginPrototype):
 
         return fig
         
+    def _top_hat_sum(self, arr, bin_id):
+    
+        return sum(arr[i] for i in self._active_planes[bin_id])
+        
+    def _sum_map(self, arr, bin_id):
+    
+        return self._top_hat_sum(arr, bin_id) if self._has_top_hats() else arr.sum()
+        
+    def _check_active(self, bin_id):
+    
+        assert bin_id in self._maptree,       "Bin '{}' is not present in map tree."
+        assert bin_id in self._active_planes, "Bin '{}' is not active."
+        
+    def sum_observed(self, bin_id):
+        """
+        Return the total observed count in a bin, summed over its top-hat radius if defined or the entire ROI if not.
+        """
+        
+        self._check_active(bin_id)
+        
+        return self._sum_map(self._maptree[bin_id].observation_map.as_partial(), bin_id)
+        
+    def sum_model(self, bin_id):
+        """
+        Return the total signal-model expectation in a bin, summed over its top-hat radius if defined or the entire ROI
+        if not.
+        """
+        
+        self._check_active(bin_id)
+        
+        expectation = self._get_expectation(
+            self._maptree[bin_id],
+            bin_id,
+            self._likelihood_model.get_number_of_point_sources(),
+            self._likelihood_model.get_number_of_extended_sources()
+        )
+
+        return self._sum_map(expectation, bin_id)
+        
+    def sum_bkg(self, bin_id):
+        """
+        Return the total background expectation in a bin, summed over its top-hat radius if defined or the entire ROI if
+        not.
+        """
+        
+        self._check_active(bin_id)
+        
+        return self._sum_map(self._maptree[bin_id].background_map.as_partial(), bin_id)
+        
     def _get_log_like_plus_log_factorial(self, obs, bkg, model, bin_id):
     
-        has_top_hats = self._has_top_hats()
-
-        if has_top_hats:
-
-            top_hat_pix = self._active_planes[bin_id]
-        
         arrs = obs, bkg, model
-        return log_likelihood(
-            *(np.array((sum(arr[i] for i in top_hat_pix),)) for arr in arrs) if has_top_hats else arrs
-        )
+        
+        if self._has_top_hats():
+        
+            arrs = (np.array((self._top_hat_sum(arr, bin_id),)) for arr in arrs)
+        
+        return log_likelihood(*arrs)
 
     def get_log_like(self):
         """
