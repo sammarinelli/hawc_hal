@@ -7,6 +7,9 @@ from scipy.fftpack import helper
 from psf_interpolator import PSFInterpolator
 from psf_wrapper import PSFWrapper
 
+class KernelNormalizationError(Exception):
+
+    pass
 
 class PSFConvolutor(object):
 
@@ -32,8 +35,13 @@ class PSFConvolutor(object):
 
         self._kernel = psf_stamp[yoff:-yoff, xoff:-xoff]
 
-        assert np.isclose(self._kernel.sum(), 1.0, rtol=1e-2), "Failed to generate proper kernel normalization: got _kernel.sum() = %f; expected 1.0+-0.01." % self._kernel.sum()
-
+        kernel_sum = self._kernel.sum()
+        if not np.isclose(kernel_sum, 1.0, rtol=1e-2):
+            raise KernelNormalizationError(
+                "Failed to generate proper kernel normalization: got _kernel.sum() = %f; expected 1.0+-0.01." %
+                kernel_sum
+            )
+            
         # Renormalize to exactly 1
         self._kernel = self._kernel / self._kernel.sum()
 

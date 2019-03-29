@@ -27,7 +27,7 @@ from hawc_hal.convolved_source import ConvolvedPointSource, \
 from hawc_hal.healpix_handling import FlatSkyToHealpixTransform
 from hawc_hal.healpix_handling import SparseHealpix
 from hawc_hal.healpix_handling import get_gnomonic_projection
-from hawc_hal.psf_fast import PSFConvolutor
+from hawc_hal.psf_fast import PSFConvolutor, KernelNormalizationError
 from hawc_hal.log_likelihood import log_likelihood
 from hawc_hal.util import ra_to_longitude
 
@@ -170,9 +170,12 @@ class HAL(PluginPrototype):
 
             #Only set up PSF convolutors for active bins.
             if bin_id in self._active_planes:
-                self._psf_convolutors[bin_id] = PSFConvolutor(central_response_bins[bin_id].psf,
-                                                              self._flat_sky_projection)
-
+                try:
+                    self._psf_convolutors[bin_id] = PSFConvolutor(central_response_bins[bin_id].psf,
+                                                                  self._flat_sky_projection)
+                except KernelNormalizationError as error:
+                    print("{}\nRemoving bin '{}' from analysis.".format(error, bin_id))
+                    del self._active_planes[bin_id]
 
     def _compute_likelihood_biases(self):
     
@@ -291,7 +294,7 @@ class HAL(PluginPrototype):
     
         return isinstance(self._active_planes, dict)
         
-    def _get_bin_list(self):
+    def get_bin_list(self):
     
         return list(self._active_planes) if self._has_top_hats() else self._active_planes
 
@@ -327,7 +330,7 @@ class HAL(PluginPrototype):
         print("")
         print("Active energy/nHit planes ({}):".format(len(self._active_planes)))
         print("-------------------------------\n")
-        print(self._get_bin_list())
+        print(self.get_bin_list())
 
     def set_model(self, likelihood_model_instance):
         """
@@ -446,7 +449,7 @@ class HAL(PluginPrototype):
 
         fig, subs = plt.subplots(2, 1, gridspec_kw={'height_ratios': [2, 1], 'hspace': 0})
         
-        bin_list = self._get_bin_list()
+        bin_list = self.get_bin_list()
 
         subs[0].errorbar(bin_list, net_counts, yerr=yerr, capsize=0, color='black', label='Net counts', fmt='.')
 
